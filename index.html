@@ -824,6 +824,27 @@
       </optgroup>
     </select>
 
+    <label class="modal-label" style="display:flex;align-items:center;justify-content:space-between;">
+      System Prompt
+      <select id="presetSelect" onchange="applyPreset()" style="font-family:inherit;font-size:11px;background:var(--bg4);border:1px solid var(--border2);border-radius:6px;padding:3px 8px;color:var(--text2);cursor:pointer;outline:none;">
+        <option value="">— Presets —</option>
+        <option value="You are a helpful, accurate, and concise assistant.">Default Assistant</option>
+        <option value="You are an expert software engineer. Write clean, well-commented code. Prefer modern best practices and explain your reasoning.">Software Engineer</option>
+        <option value="You are a creative writing partner. Help craft vivid, engaging stories with strong characters and compelling narratives.">Creative Writer</option>
+        <option value="You are a data analyst. Help interpret data, suggest visualizations, write SQL/Python, and explain findings clearly.">Data Analyst</option>
+        <option value="You are a Socratic tutor. Never give direct answers — instead guide the user to discover answers themselves through questions.">Socratic Tutor</option>
+        <option value="You are a blunt, no-nonsense assistant. Skip pleasantries. Give direct answers only. No filler, no disclaimers.">No-Nonsense Mode</option>
+        <option value="custom">Custom…</option>
+      </select>
+    </label>
+    <textarea
+      class="modal-input"
+      id="systemPromptInput"
+      placeholder="e.g. You are a helpful assistant that responds only in haiku..."
+      rows="4"
+      style="resize:vertical;min-height:90px;font-family:inherit;font-size:13px;line-height:1.5;"
+    ></textarea>
+
     <div class="modal-actions">
       <button class="modal-cancel" onclick="closeModal()">Cancel</button>
       <button class="modal-save" onclick="saveConfig()">Save & Connect</button>
@@ -835,6 +856,7 @@
   // ── State ──
   let apiKey = localStorage.getItem('nvidia_api_key') || '';
   let selectedModel = localStorage.getItem('nvidia_model') || 'minimaxai/minimax-m2.5';
+  let systemPrompt = localStorage.getItem('nvidia_system_prompt') || '';
   let conversations = [];
   let isGenerating = false;
 
@@ -853,6 +875,7 @@
     }
     document.getElementById('apiKeyInput').value = apiKey;
     document.getElementById('modelSelect').value = selectedModel;
+    document.getElementById('systemPromptInput').value = systemPrompt;
     updateModelLabel();
     textarea.addEventListener('input', () => {
       sendBtn.disabled = !textarea.value.trim() || isGenerating;
@@ -885,14 +908,25 @@
   function saveConfig() {
     const key = document.getElementById('apiKeyInput').value.trim();
     const model = document.getElementById('modelSelect').value;
+    const sp = document.getElementById('systemPromptInput').value.trim();
     if (!key) { alert('Please enter an API key.'); return; }
     apiKey = key;
     selectedModel = model;
+    systemPrompt = sp;
     localStorage.setItem('nvidia_api_key', key);
     localStorage.setItem('nvidia_model', model);
+    localStorage.setItem('nvidia_system_prompt', sp);
     updateStatus(true);
     updateModelLabel();
     closeModal();
+  }
+
+  function applyPreset() {
+    const sel = document.getElementById('presetSelect');
+    const val = sel.value;
+    if (!val || val === 'custom') return;
+    document.getElementById('systemPromptInput').value = val;
+    sel.value = '';
   }
 
   // ── Chat ──
@@ -950,43 +984,74 @@
         },
         body: JSON.stringify({
           model: selectedModel,
-          messages: conversations,
-          temperature: 0.7,
-          max_tokens: 1024,
+          messages: systemPrompt ? [{ role: 'system', content: systemPrompt }, ...conversations] : conversations,
+          temperature: 1,
+          top_p: 0.95,
+          max_tokens: 8192,
           stream: true
         })
       });
 
       if (!response.ok) {
-        const err = await response.json().catch(() => ({}));
-        throw new Error(err.message || `API error ${response.status}`);
+        const errText = await response.text().catch(() => '');
+        let errMsg = `API error ${response.status}`;
+        try {
+          const errJson = JSON.parse(errText);
+          errMsg = errJson?.detail || errJson?.message || errJson?.error?.message || errMsg;
+        } catch {}
+        throw new Error(errMsg);
       }
 
-      // Remove typing
+      // Remove typing indicator now that the stream is open
       typingEl.remove();
 
-      // Create streaming message
+      // Create the assistant message bubble
       const msgEl = appendMessage('assistant', '', true);
       const bubbleEl = msgEl.querySelector('.message-bubble');
 
       let fullText = '';
+      let buffer = '';
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split('\n').filter(l => l.startsWith('data: '));
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // Process all complete lines; keep last incomplete line in buffer
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+
         for (const line of lines) {
-          const data = line.slice(6).trim();
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) continue;
+          const data = trimmed.slice(5).trim();
           if (data === '[DONE]') continue;
           try {
             const parsed = JSON.parse(data);
-            const delta = parsed.choices?.[0]?.delta?.content || '';
+            // Guard: some chunks have empty choices (e.g. MiniMax usage events)
+            if (!parsed.choices || parsed.choices.length === 0) continue;
+            const delta = parsed.choices[0]?.delta?.content;
+            if (delta == null) continue;
             fullText += delta;
             bubbleEl.innerHTML = formatText(fullText);
             scrollToBottom();
+          } catch { /* malformed chunk — skip */ }
+        }
+      }
+
+      // Flush any remaining buffered data
+      if (buffer.trim().startsWith('data:')) {
+        const data = buffer.trim().slice(5).trim();
+        if (data && data !== '[DONE]') {
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.choices?.length > 0) {
+              const delta = parsed.choices[0]?.delta?.content;
+              if (delta) { fullText += delta; bubbleEl.innerHTML = formatText(fullText); }
+            }
           } catch {}
         }
       }
@@ -995,8 +1060,8 @@
 
     } catch (err) {
       typingEl.remove();
-      appendMessage('assistant', `⚠️ Error: ${err.message}. Check your API key and try again.`);
-      console.error(err);
+      appendMessage('assistant', `⚠️ **Error:** ${err.message}\n\nDouble-check your API key and make sure the selected model is available on your NVIDIA NIM account.`);
+      console.error('NVIDIA API error:', err);
     }
 
     isGenerating = false;
