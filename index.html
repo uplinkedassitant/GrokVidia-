@@ -810,7 +810,7 @@
         <option value="qwen/qwen3-235b-a22b">Qwen3 235B-A22B (MoE) — Advanced Reasoning</option>
       </optgroup>
       <optgroup label="Meta Llama">
-        <option value="meta/llama-3.3-70b-instruct">Meta Llama 3.3 70B Instruct</option>
+        <option value="meta/llama-3.3-70b-instruct" selected>Meta Llama 3.3 70B Instruct (Default)</option>
         <option value="meta/llama-3.1-405b-instruct">Meta Llama 3.1 405B Instruct</option>
       </optgroup>
       <optgroup label="NVIDIA">
@@ -854,7 +854,7 @@
 
 <script>
   // ── State ──
-  let apiKey = localStorage.getItem('nvidia_api_key') || '';
+  let apiKey = localStorage.getItem('nvidia_api_key') || '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';
   let selectedModel = localStorage.getItem('nvidia_model') || 'minimaxai/minimax-m2.5';
   let systemPrompt = localStorage.getItem('nvidia_system_prompt') || '';
   let conversations = [];
@@ -1156,8 +1156,7 @@
   // ── Start ──
   init();
 
-  // Auto-open modal if no key
-  if (!apiKey) setTimeout(openModal, 600);
+  // Key is pre-filled as default, modal opens only when user clicks API Key button
 </script>
 </body>
 </html>
